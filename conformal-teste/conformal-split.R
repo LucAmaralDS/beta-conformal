@@ -1,4 +1,5 @@
 library(betareg)
+library(mgcv)
 
 # --- Funções auxiliares ---
 train.beta <- function(x, y) {
@@ -18,8 +19,22 @@ predict.beta <- function(model, newx) {
   predict(model, newdata = newdata, type = "response")
 }
 
+# Treina um GAM para modelar os resíduos absolutos
+mad.train.gam <- function(x, res) {
+  df <- data.frame(res = res, x)
+  formula <- as.formula(paste("res ~", paste0("s(", colnames(x), ")", collapse = " + ")))
+  gam(formula, data = df, family = gaussian())
+}
+
+# Faz predição dos resíduos absolutos estimados
+mad.predict.gam <- function(model, newx) {
+  predict(model, newdata = as.data.frame(newx), type = "response")
+}
+
 split.conformal.beta <- function(x, y, x0, 
                                  train.fun, predict.fun,
+                                 mad.train.fun,
+                                 mad.predict.fun,
                                  alpha = 0.1, rho = 0.5,
                                  link = "logit",
                                  split = NULL, seed = NULL, verbose = FALSE) {
@@ -56,16 +71,39 @@ split.conformal.beta <- function(x, y, x0,
                   "probit" = pnorm,
                   "cloglog" = function(eta) 1 - exp(-exp(eta)))
   
+  # Calcular resíduos no espaço transformado
   eta_y <- g(y[i2])
   phi <- coef(model)['(phi)']
   mu_star <- digamma(pred_train[i2] * phi) - digamma((1 - pred_train[i2]) * phi)
   res <- abs(eta_y - mu_star)
   
+  # === Escalonamento opcional com MAD ===
+  if (!is.null(mad.train.fun) && !is.null(mad.predict.fun)) {
+    # Residuals da amostra de treino para treinar o GAM
+    eta_y_train <- g(y[i1])
+    mu_star_train <- digamma(pred_train[i1] * phi) - digamma((1 - pred_train[i1]) * phi)
+    res_train <- abs(eta_y_train - mu_star_train)
+    
+    # Ajustar o modelo de MAD
+    mad_model <- mad.train.fun(x[i1, , drop = FALSE], res_train)
+    mad_i2 <- mad.predict.fun(mad_model, x[i2, , drop = FALSE])
+    mad_x0 <- mad.predict.fun(mad_model, x0)
+    
+    # Corrigir casos com previsão MAD negativa
+    mad_i2 <- pmax(mad_i2, 1e-6)
+    mad_x0 <- pmax(mad_x0, 1e-6)
+    
+    # Escalonar os resíduos
+    res <- res / mad_i2
+  } else {
+    mad_x0 <- rep(1, nrow(x0))
+  }
   q_alpha <- quantile(res, probs = 1 - alpha, type = 1)
   
   eta_pred <- digamma(pred_test * phi) - digamma((1 - pred_test) * phi)
-  lo_eta <- eta_pred - q_alpha
-  up_eta <- eta_pred + q_alpha
+  lo_eta <- eta_pred - q_alpha * mad_x0
+  up_eta <- eta_pred + q_alpha * mad_x0
+  
   lo <- g_inv(lo_eta)
   up <- g_inv(up_eta)
   
@@ -110,6 +148,8 @@ for (b in 1:B) {
   res <- split.conformal.beta(x, y, x0 = x,
                               train.fun = train.beta,
                               predict.fun = predict.beta,
+                              mad.train.fun = mad.train.gam,
+                              mad.predict.fun = mad.predict.gam,
                               alpha = alpha,
                               rho = 0.7,
                               link = "logit",
