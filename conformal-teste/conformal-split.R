@@ -98,7 +98,11 @@ split.conformal.beta <- function(x, y, x0,
   } else {
     mad_x0 <- rep(1, nrow(x0))
   }
-  q_alpha <- quantile(res, probs = 1 - alpha, type = 1)
+  
+  n2 <- length(i2)
+  prob_quantile <- (1 - alpha) * (1 + 1 / n2)
+  #if (prob_quantile > 1) prob_quantile <- 1 # Segurança para casos extremos
+  q_alpha <- quantile(res, probs = prob_quantile, type = 1) 
   
   eta_pred <- digamma(pred_test * phi) - digamma((1 - pred_test) * phi)
   lo_eta <- eta_pred - q_alpha * mad_x0
@@ -122,7 +126,7 @@ B <- 100
 n <- 1000
 alpha <- 0.05
 phi <- 50
-beta <- c(-4, 0.5, 1)
+beta <- c(-1.5, 1.5, 1)
 
 gera_dados <- function(n) {
   x1 <- runif(n)
@@ -138,7 +142,7 @@ cobertura_total <- 0
 amplitude_total <- 0
 n_total <- 0
 
-set.seed(123)
+set.seed(5)
 
 for (b in 1:B) {
   df <- gera_dados(n)
